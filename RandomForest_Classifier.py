@@ -11,7 +11,7 @@ import joblib
 
 df = pd.read_excel("TrainingYPR_[SUBJECTNAME]_[TRIAL].xlsx", sheet_name="YPR_Data")
 
-x = df[['Roll', 'Pitch', 'Yaw']]
+x = df[['Roll', 'Pitch']]
 y = df['Section']
 
 y_encoded = y.astype('category').cat.codes #labels sections numerically [0,1,2]
