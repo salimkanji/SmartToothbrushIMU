@@ -1,0 +1,37 @@
+import serial
+import numpy as np
+import joblib
+from time import sleep, time
+import pandas as pd
+
+
+classifier = joblib.load('roll_pitch_classifier-RandomForest.pkl')
+
+dataCOM = serial.Serial('COM7')
+sleep(1)
+
+class_label = ['left front', 'middle front', 'right front']
+
+def readSerial():
+    dataline = dataCOM.readline().decode('utf-8').strip() #get serial data and split unecessary characters in format [roll/pitch/yaw/....]
+    splitline = dataline.split("/")
+    values = list(map(float, splitline))
+    roll, pitch, yaw, ax, ay, az, gx, gy, gz = values
+    #print(roll, pitch, yaw)
+    return roll, pitch, yaw, ax, ay, az, gx, gy, gz
+
+while True:
+    roll, pitch, yaw, ax, ay, az, gx, gy, gz = readSerial()
+    input_df = pd.DataFrame([[roll, pitch]], columns=["Roll", "Pitch"])
+
+    predict = classifier.predict(input_df)[0]
+    label = class_label[predict]
+
+
+    print(roll,pitch)
+    print(f"Predicted Section : {label}")
+
+
+
+
+
