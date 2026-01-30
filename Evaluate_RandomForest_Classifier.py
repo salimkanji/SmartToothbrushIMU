@@ -16,7 +16,7 @@ MODEL_PATH = "roll_pitch_classifier-RandomForest.pkl"
 class_label = ['left front', 'middle front', 'right front']
 
 # Smoothing / UI behavior
-VOTE_WINDOW = 12          # how many recent predictions to vote over
+VOTE_WINDOW = 1          # how many recent predictions to vote over
 UPDATE_MS = 30            # GUI refresh rate
 CONF_THRESHOLD = 0.55     # below this, show "UNCERTAIN" (if proba available)
 
@@ -172,7 +172,7 @@ def update_loop():
         roll, pitch, yaw = out
 
         # Build classifier input (your model expects Roll, Pitch, Yaw now)
-        input_df = pd.DataFrame([[roll, pitch, yaw]], columns=["Roll", "Pitch", "Yaw"])
+        input_df = pd.DataFrame([[roll, pitch]], columns=["Roll", "Pitch"])
 
         conf_text = "--"
         display_label = "--"
