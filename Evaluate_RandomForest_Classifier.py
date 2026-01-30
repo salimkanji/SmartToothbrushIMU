@@ -69,5 +69,5 @@ while True:
     predict = classifier.predict(input_df)[0]
     label = class_label[predict]
 
-    print(roll, pitch)
+    print(roll, pitch, yaw)
     print(f"Predicted Section : {label}")
