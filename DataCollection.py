@@ -10,6 +10,7 @@ running = True
 fileName = 'TrainingYPR_[SUBJECTNAME]_[TRIAL].xlsx'
 collectionDuration = 20  # seconds per section test
 
+# --- Serial Port ---
 dataCOM = serial.Serial('COM8', baudrate=115200, timeout=1)
 sleep(1)  # allow COM to connect
 
@@ -26,7 +27,6 @@ def readSerial():
     For CSV4, raw IMU fields are set to NaN.
     Ignores unexpected / boot / debug lines by returning None.
     """
-
     line = dataCOM.readline().decode('utf-8', errors='ignore').strip()
     if not line:
         return None
@@ -60,7 +60,6 @@ def readSerial():
         roll, pitch, yaw, ax, ay, az, gx, gy, gz = values
         return roll, pitch, yaw, ax, ay, az, gx, gy, gz
 
-    # Anything else (boot text, random prints, etc.)
     return None
 
 
@@ -70,9 +69,13 @@ sections = [
     "lower right base", "lower left base", "lower middle base",
 ]
 
+EXPECTED_COLS = [
+    'Section', 'TimeStamp', 'Roll', 'Pitch', 'Yaw',
+    'Ax', 'Ay', 'Az', 'Gx', 'Gy', 'Gz'
+]
+
 
 def dataCollect(section_name, duration):
-
     roll_data = []
     pitch_data = []
     yaw_data = []
@@ -127,23 +130,11 @@ def dataCollect(section_name, duration):
     }
 
 
-# Create the Excel file if it doesn't exist
+# --- Create file if missing, with consistent columns ---
 if not os.path.exists(fileName):
-    df = pd.DataFrame({
-        'Section': [],
-        'TimeStamp': [],
-        'Roll': [],
-        'Pitch': [],
-        'Yaw': [],
-        'Ax': [],
-        'Ay': [],
-        'Az': [],
-        'Gx': [],
-        'Gy': [],
-        'Gz': []
-    })
+    df_init = pd.DataFrame({col: [] for col in EXPECTED_COLS})
     with pd.ExcelWriter(fileName, engine='openpyxl') as writer:
-        df.to_excel(writer, sheet_name='YPR_Data', index=False)
+        df_init.to_excel(writer, sheet_name='YPR_Data', index=False)
 
 
 while running:
@@ -155,10 +146,18 @@ while running:
     current_section = sections[section_choice - 1]
 
     data = dataCollect(current_section, collectionDuration)
-    df = pd.DataFrame(data)
+    df = pd.DataFrame(data).reindex(columns=EXPECTED_COLS)
+
+    # --- Option 1: enforce consistent dtypes before concat (fixes FutureWarning) ---
+    for col in ["Ax", "Ay", "Az", "Gx", "Gy", "Gz"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
 
     if os.path.exists(fileName):
-        existing_df = pd.read_excel(fileName, sheet_name='YPR_Data')
+        existing_df = pd.read_excel(fileName, sheet_name='YPR_Data').reindex(columns=EXPECTED_COLS)
+
+        for col in ["Ax", "Ay", "Az", "Gx", "Gy", "Gz"]:
+            existing_df[col] = pd.to_numeric(existing_df[col], errors="coerce")
+
         df = pd.concat([existing_df, df], ignore_index=True)
 
     with pd.ExcelWriter(fileName, engine='openpyxl', mode='a', if_sheet_exists='replace') as writer:
@@ -169,4 +168,3 @@ while running:
         running = False
 
 dataCOM.close()
-print("Data collection ended.")
