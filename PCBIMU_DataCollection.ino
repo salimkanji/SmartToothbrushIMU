@@ -1,94 +1,137 @@
 /******************************************************************
   ESP32-S3 + BMI270/BMM150 + ReefwingAHRS
-  Pins: SDA = GPIO 2, SCL = GPIO 1
+  PCB pins: SDA = GPIO2, SCL = GPIO1
+  Update rate: ~100 Hz
+  Gyro bias calibration at startup
 ******************************************************************/
 
 #include <Wire.h>
-#include <math.h>
-#include <ReefwingAHRS.h>
 #include <Arduino_BMI270_BMM150.h>
+#include <ReefwingAHRS.h>
+#include <math.h>
 
 #define SDA_PIN  2
 #define SCL_PIN  1
 #define I2C_HZ   400000
 
 ReefwingAHRS ahrs;
-SensorData data;
+SensorData data = {};
 
-int loopFrequency = 0;
-const unsigned long displayPeriod = 1000;
-unsigned long previousMillis = 0;
+// Gyro bias offsets (deg/s)
+float gxOffset = 0.0f;
+float gyOffset = 0.0f;
+float gzOffset = 0.0f;
 
-float prevroll  = 0.0f;
-float prevpitch = 0.0f;
-float prevyaw   = 0.0f;
+// Output smoothing (EMA)
+float yawF = 0.0f, pitchF = 0.0f, rollF = 0.0f;
+const float smooth = 0.1f;   // 0.0=no smoothing, 1.0=noisy/raw (try 0.15–0.35)
+
+unsigned long lastUpdate = 0;
+
+// --- Gyro calibration (keep board still) ---
+void calibrateGyro() {
+  const int N = 500;
+  float gx, gy, gz;
+
+  gxOffset = gyOffset = gzOffset = 0.0f;
+
+  Serial.println("Calibrating gyro... DON'T MOVE");
+
+  for (int i = 0; i < N; i++) {
+    // wait until gyro sample is available
+    while (!IMU.gyroscopeAvailable()) {
+      delay(1);
+    }
+    IMU.readGyroscope(gx, gy, gz);
+    gxOffset += gx;
+    gyOffset += gy;
+    gzOffset += gz;
+    delay(2);
+  }
+
+  gxOffset /= N;
+  gyOffset /= N;
+  gzOffset /= N;
+
+  Serial.print("Gyro offsets: ");
+  Serial.print(gxOffset, 4); Serial.print(", ");
+  Serial.print(gyOffset, 4); Serial.print(", ");
+  Serial.println(gzOffset, 4);
+}
 
 void setup() {
   Serial.begin(115200);
-  unsigned long startWait = millis();
-  while (!Serial && (millis() - startWait < 2000)) { delay(10); }
+  delay(1500);   // IMPORTANT on ESP32-S3 USB/CDC
 
+  Serial.println("Booting...");
+
+  // --- I2C on your custom PCB pins ---
   Wire.begin(SDA_PIN, SCL_PIN);
   Wire.setClock(I2C_HZ);
 
-  ahrs.begin();
-  ahrs.setFusionAlgorithm(SensorFusion::MADGWICK);
-  ahrs.setDeclination(-8.89f);
+  // If the IMU lib supports begin(Wire), use it. If not, IMU.begin() will use global Wire.
+  // Try this first (many builds will accept it):
+  // if (!IMU.begin(Wire)) { ... }
+  // If it doesn't compile, fall back to IMU.begin()
 
-  Serial.println("ESP32-S3 + BMI270/BMM150 init...");
-
+  Serial.println("Starting IMU...");
   if (!IMU.begin()) {
-    Serial.println("IMU NOT detected. Check wiring, power, and I2C pins.");
+    Serial.println("IMU NOT detected. Check wiring/power/I2C pins.");
     while (1) { delay(100); }
   }
+  Serial.println("IMU OK");
+
+  calibrateGyro();
+
+  // --- AHRS setup ---
+  ahrs.begin();
+  ahrs.setDOF(DOF::DOF_9);
+
+  ahrs.setFusionAlgorithm(SensorFusion::MAHONY);
+  ahrs.setKp(5.0f);
+  ahrs.setKi(0.0f);
+
+  ahrs.setDeclination(-8.51f);
+
+  Serial.println("AHRS ready.");
 }
 
 void loop() {
-  if (IMU.gyroscopeAvailable())      IMU.readGyroscope     (data.gx, data.gy, data.gz);
-  if (IMU.accelerationAvailable())   IMU.readAcceleration  (data.ax, data.ay, data.az);
-  if (IMU.magneticFieldAvailable())  IMU.readMagneticField (data.mx, data.my, data.mz);
+  unsigned long now = millis();
 
-  ahrs.setData(data);
-  ahrs.update();
+  // ~100 Hz fixed update rate
+  if (now - lastUpdate < 10) return;
+  lastUpdate = now;
 
-  if (millis() - previousMillis >= displayPeriod) {
+  // Read all sensors if available
+  if (IMU.gyroscopeAvailable() &&
+      IMU.accelerationAvailable() &&
+      IMU.magneticFieldAvailable()) {
 
-    float newroll  = ahrs.angles.roll;
-    float newpitch = ahrs.angles.pitch;
-    float newyaw   = ahrs.angles.yaw;
+    IMU.readGyroscope(data.gx, data.gy, data.gz);
+    IMU.readAcceleration(data.ax, data.ay, data.az);
+    IMU.readMagneticField(data.mx, data.my, data.mz);
 
-    float deltaroll  = fabsf(newroll  - prevroll);
-    float deltapitch = fabsf(newpitch - prevpitch);
-    float deltayaw   = fabsf(newyaw   - prevyaw);
+    // Remove gyro bias
+    data.gx -= gxOffset;
+    data.gy -= gyOffset;
+    data.gz -= gzOffset;
 
-    bool stationary = (deltaroll < 3.0f) && (deltapitch < 3.0f) && (deltayaw < 3.0f);
+    ahrs.setData(data);
+    ahrs.update();
 
-    float beta  = stationary ? 0.05f : 0.4f;
-    float alpha = stationary ? 0.9f  : 0.2f;
+    // Smooth angles (optional)
+    yawF   = (1.0f - smooth) * yawF   + smooth * ahrs.angles.yaw;
+    pitchF = (1.0f - smooth) * pitchF + smooth * ahrs.angles.pitch;
+    rollF  = (1.0f - smooth) * rollF  + smooth * ahrs.angles.roll;
 
-    ahrs.setBeta(beta);
-
-    prevroll  = alpha * prevroll  + (1.0f - alpha) * newroll;
-    prevpitch = alpha * prevpitch + (1.0f - alpha) * newpitch;
-    prevyaw   = alpha * prevyaw   + (1.0f - alpha) * newyaw;
-
-    Serial.print(prevroll, 2);  Serial.print("/");
-    Serial.print(prevpitch, 2); Serial.print("/");
-    Serial.print(prevyaw, 2);   Serial.print("/");
-
-    Serial.print(data.ax, 2); Serial.print("/");
-    Serial.print(data.ay, 2); Serial.print("/");
-    Serial.print(data.az, 2); Serial.print("/");
-
-    Serial.print(data.gx, 2); Serial.print("/");
-    Serial.print(data.gy, 2); Serial.print("/");
-    Serial.print(data.gz, 2);
-
-    Serial.print("\n");
-
-    loopFrequency = 0;
-    previousMillis = millis();
+    // CSV output: time,yaw,pitch,roll
+    Serial.print(now);
+    Serial.print(",");
+    Serial.print(yawF, 3);
+    Serial.print(",");
+    Serial.print(pitchF, 3);
+    Serial.print(",");
+    Serial.println(rollF, 3);
   }
-
-  loopFrequency++;
 }
