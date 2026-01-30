@@ -6,7 +6,7 @@ import pandas as pd
 
 classifier = joblib.load('roll_pitch_classifier-RandomForest.pkl')
 
-dataCOM = serial.Serial('COM7', baudrate=115200, timeout=1)
+dataCOM = serial.Serial('COM8', baudrate=115200, timeout=1)
 sleep(1)
 
 class_label = ['left front', 'middle front', 'right front']
@@ -65,7 +65,7 @@ while True:
 
     roll, pitch, yaw, ax, ay, az, gx, gy, gz = out
 
-    input_df = pd.DataFrame([[roll, pitch]], columns=["Roll", "Pitch"])
+    input_df = pd.DataFrame([[roll, pitch, yaw]], columns=["Roll", "Pitch","Yaw"])
     predict = classifier.predict(input_df)[0]
     label = class_label[predict]
 
