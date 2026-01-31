@@ -11,29 +11,50 @@ import joblib
 
 df = pd.read_excel("TrainingYPR_[SUBJECTNAME]_[TRIAL].xlsx", sheet_name="YPR_Data")
 
-x = df[['Roll', 'Pitch']]
-y = df['Section']
+# Keep only the classes you want (optional)
+# df = df[df["Section"].isin(["left front","middle front","right front"])]
 
-y_encoded = y.astype('category').cat.codes #labels sections numerically [0,1,2]
-class_label = y.astype('category').cat.categories #ties code to label [left, mid, right]
+# Drop missing feature rows
+df = df.dropna(subset=["Roll", "Pitch", "Section"])
 
-x_train, x_test, y_train, y_test = train_test_split(x,y_encoded, test_size=0.3, random_state=42)
+X = df[["Roll", "Pitch"]]
 
-pipeline = make_pipeline(StandardScaler(), RandomForestClassifier(n_estimators=100, random_state= 42))
-pipeline.fit(x_train,y_train)
+cat = df["Section"].astype("category")
+y = cat.cat.codes
+class_label = cat.cat.categories
 
-y_pred = pipeline.predict(x_test)
+print("Class counts:\n", cat.value_counts(), "\n")
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y,
+    test_size=0.3,
+    random_state=42,
+    stratify=y
+)
+
+pipeline = make_pipeline(
+    StandardScaler(),
+    RandomForestClassifier(
+        n_estimators=300,
+        random_state=42,
+        class_weight="balanced"
+    )
+)
+
+pipeline.fit(X_train, y_train)
+y_pred = pipeline.predict(X_test)
 
 print("Classification Report:\n")
 print(classification_report(y_test, y_pred, target_names=class_label))
 
-print("Confusion Matrix:\n")
-cm = confusion_matrix(y_test, y_pred)
-sns.heatmap(cm, annot=True, fmt='d', xticklabels=class_label, yticklabels=class_label, cmap="Blues")
+# Normalized confusion matrix (per-actual-class %)
+cm = confusion_matrix(y_test, y_pred, normalize="true")
+plt.figure(figsize=(7,5))
+sns.heatmap(cm, annot=True, fmt=".2f", xticklabels=class_label, yticklabels=class_label, cmap="Blues")
 plt.xlabel("Predicted")
 plt.ylabel("Actual")
-plt.title("Confusion Matrix")
+plt.title("Confusion Matrix (Normalized)")
 plt.show()
 
-
-joblib.dump(pipeline, 'roll_pitch_classifier-RandomForest.pkl')
+joblib.dump(pipeline, "roll_pitch_classifier-RandomForest.pkl")
+print("Saved model: roll_pitch_classifier-RandomForest.pkl")
