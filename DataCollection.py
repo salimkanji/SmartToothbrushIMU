@@ -2,8 +2,8 @@ import serial
 from time import sleep, time
 import pandas as pd
 import os
-import sys
 import math
+import numpy as np
 
 running = True
 
@@ -63,6 +63,67 @@ def readSerial():
     return None
 
 
+# ----------------------------
+# Calibration (zero reference)
+# ----------------------------
+cal_roll0 = 0.0
+cal_pitch0 = 0.0
+cal_yaw0 = 0.0
+calibrated = False
+
+
+def flush_serial(seconds=1.0):
+    """Flush serial buffer for a bit so calibration uses fresh samples."""
+    t0 = time()
+    while time() - t0 < seconds:
+        _ = dataCOM.readline()
+
+
+def calibrate_reference(settle_seconds=5, sample_count=50):
+    """
+    Prompts user to hold the device in a reference pose.
+    User presses Enter when ready, then we wait settle_seconds,
+    then collect sample_count samples and average Roll/Pitch/Yaw to use as offsets.
+    """
+    global cal_roll0, cal_pitch0, cal_yaw0, calibrated
+
+    print("\n=== CALIBRATION ===")
+    print("Hold the device in front of your face (your chosen 'zero' pose).")
+    input("When it is in position, press ENTER to start calibration...")
+
+    print(f"Great — hold still. Settling for {settle_seconds} seconds...")
+    flush_serial(0.5)  # clear old lines
+    sleep(settle_seconds)
+
+    print("Capturing reference... (stay still)")
+    rolls, pitches, yaws = [], [], []
+    flush_serial(0.2)
+
+    # Collect sample_count valid samples
+    while len(rolls) < sample_count:
+        out = readSerial()
+        if out is None:
+            continue
+        roll, pitch, yaw, ax, ay, az, gx, gy, gz = out
+
+        # guard against NaN
+        if any(map(lambda v: isinstance(v, float) and math.isnan(v), [roll, pitch, yaw])):
+            continue
+
+        rolls.append(roll)
+        pitches.append(pitch)
+        yaws.append(yaw)
+
+    cal_roll0 = float(np.mean(rolls))
+    cal_pitch0 = float(np.mean(pitches))
+    cal_yaw0 = float(np.mean(yaws))
+    calibrated = True
+
+    print("✅ Calibration complete!")
+    print(f"Reference offsets -> Roll0={cal_roll0:.3f}, Pitch0={cal_pitch0:.3f}, Yaw0={cal_yaw0:.3f}")
+    print("Yaw will be logged as RELATIVE yaw in [-180, +180].\n")
+
+
 sections = [
     "right front", "left front", "middle front",
     "upper right base", "upper left base", "upper middle base",
@@ -101,6 +162,13 @@ def dataCollect(section_name, duration):
 
         roll, pitch, yaw, ax, ay, az, gx, gy, gz = out
 
+        # Apply calibration offsets to angles if calibrated
+        if calibrated:
+            roll -= cal_roll0
+            pitch -= cal_pitch0
+            # Wrap-safe relative yaw in [-180, 180]
+            yaw = (yaw - cal_yaw0 + 180) % 360 - 180
+
         roll_data.append(roll)
         pitch_data.append(pitch)
         yaw_data.append(yaw)
@@ -137,6 +205,10 @@ if not os.path.exists(fileName):
         df_init.to_excel(writer, sheet_name='YPR_Data', index=False)
 
 
+# Run calibration ONCE before starting section selection
+calibrate_reference(settle_seconds=5, sample_count=200)
+
+
 while running:
     print("Select a section:")
     for i, section in enumerate(sections, 1):
@@ -148,13 +220,12 @@ while running:
     data = dataCollect(current_section, collectionDuration)
     df = pd.DataFrame(data).reindex(columns=EXPECTED_COLS)
 
-    # --- Option 1: enforce consistent dtypes before concat (fixes FutureWarning) ---
+    # enforce consistent dtypes before concat (fixes FutureWarning)
     for col in ["Ax", "Ay", "Az", "Gx", "Gy", "Gz"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
     if os.path.exists(fileName):
         existing_df = pd.read_excel(fileName, sheet_name='YPR_Data').reindex(columns=EXPECTED_COLS)
-
         for col in ["Ax", "Ay", "Az", "Gx", "Gy", "Gz"]:
             existing_df[col] = pd.to_numeric(existing_df[col], errors="coerce")
 
