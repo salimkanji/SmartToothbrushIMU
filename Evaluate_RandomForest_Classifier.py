@@ -2,6 +2,7 @@ import serial
 import joblib
 from time import sleep
 import pandas as pd
+import customtkinter as ctk
 import tkinter as tk
 from collections import deque
 
@@ -31,18 +32,11 @@ dataCOM = serial.Serial(PORT, baudrate=BAUD, timeout=1)
 sleep(1)
 
 def readSerial():
-    """
-    Returns tuple: (roll, pitch, yaw) or None
-
-    Supports:
-      CSV4:   now,yaw,pitch,roll
-      Slash9: roll/pitch/yaw/ax/ay/az/gx/gy/gz
-    """
     line = dataCOM.readline().decode("utf-8", errors="ignore").strip()
     if not line:
         return None
 
-    if "," in line:  # CSV4
+    if "," in line:  # CSV4: now,yaw,pitch,roll
         parts = line.split(",")
         if len(parts) != 4:
             return None
@@ -68,7 +62,7 @@ def wrap_yaw_rel(y):
     return (y + 180) % 360 - 180
 
 # ----------------------------
-# Calibration + prediction state
+# State
 # ----------------------------
 calibrated = False
 calibrating_now = False
@@ -82,90 +76,8 @@ cal_rolls = []
 cal_pitches = []
 cal_yaws = []
 
-# ----------------------------
-# GUI
-# ----------------------------
-root = tk.Tk()
-root.title("Tooth Section Visualizer 🦷 (3-Zone)")
-root.geometry("820x560")
-
-canvas = tk.Canvas(root, width=820, height=340, bg="white")
-canvas.pack()
-
-info_frame = tk.Frame(root)
-info_frame.pack(fill="x", padx=12, pady=8)
-
-lbl_angles = tk.Label(info_frame, text="Roll: --   Pitch: --   Yaw: --", font=("Arial", 14))
-lbl_angles.grid(row=0, column=0, sticky="w")
-
-lbl_pred = tk.Label(info_frame, text="Predicted: --", font=("Arial", 16, "bold"))
-lbl_pred.grid(row=1, column=0, sticky="w", pady=(6, 0))
-
-lbl_conf = tk.Label(info_frame, text="Confidence: --", font=("Arial", 12))
-lbl_conf.grid(row=2, column=0, sticky="w", pady=(4, 0))
-
-lbl_status = tk.Label(info_frame, text="Status: Click Calibrate", font=("Arial", 12))
-lbl_status.grid(row=3, column=0, sticky="w", pady=(6, 0))
-
-btn_frame = tk.Frame(info_frame)
-btn_frame.grid(row=0, column=1, rowspan=4, padx=20, sticky="ne")
-
-btn_cal = tk.Button(btn_frame, text="Calibrate (Hold at Face)", font=("Arial", 12, "bold"), width=22)
-btn_cal.pack(pady=(0, 6))
-
-lbl_countdown = tk.Label(btn_frame, text="", font=("Arial", 14))
-lbl_countdown.pack()
-
-# Mouth outline + regions
-canvas.create_oval(120, 55, 700, 325, outline="black", width=3)
-canvas.create_rectangle(230, 160, 590, 235, outline="black", width=2)
-
-region_left  = canvas.create_rectangle(230, 160, 350, 235, outline="black", width=2, fill="#e0e0e0")
-region_mid   = canvas.create_rectangle(350, 160, 470, 235, outline="black", width=2, fill="#e0e0e0")
-region_right = canvas.create_rectangle(470, 160, 590, 235, outline="black", width=2, fill="#e0e0e0")
-
-canvas.create_text(290, 250, text="LEFT", font=("Arial", 12))
-canvas.create_text(410, 250, text="MIDDLE", font=("Arial", 12))
-canvas.create_text(530, 250, text="RIGHT", font=("Arial", 12))
-
-# History strip
-canvas.create_text(120, 20, text="History:", anchor="w", font=("Arial", 12))
-history_boxes = []
-HIST_LEN = 30
-start_x = 190
-y0, y1 = 10, 30
-box_w = 16
-
-for i in range(HIST_LEN):
-    x0 = start_x + i * (box_w + 2)
-    x1 = x0 + box_w
-    history_boxes.append(canvas.create_rectangle(x0, y0, x1, y1, outline="#999", fill="#f5f5f5"))
-
-def label_to_color(label):
-    if label == "left front":
-        return "#7CFC00"
-    if label == "middle front":
-        return "#00BFFF"
-    if label == "right front":
-        return "#FFA500"
-    if label == "UNCERTAIN":
-        return "#C0C0C0"
-    return "#f5f5f5"
-
-def highlight(label):
-    canvas.itemconfig(region_left,  fill="#e0e0e0")
-    canvas.itemconfig(region_mid,   fill="#e0e0e0")
-    canvas.itemconfig(region_right, fill="#e0e0e0")
-
-    if label == "left front":
-        canvas.itemconfig(region_left, fill="#7CFC00")
-    elif label == "middle front":
-        canvas.itemconfig(region_mid, fill="#00BFFF")
-    elif label == "right front":
-        canvas.itemconfig(region_right, fill="#FFA500")
-
 pred_buffer = deque(maxlen=VOTE_WINDOW)
-hist_buffer = deque(maxlen=HIST_LEN)
+hist_buffer = deque(maxlen=30)
 
 def majority_vote(buf):
     if not buf:
@@ -175,13 +87,215 @@ def majority_vote(buf):
         counts[x] = counts.get(x, 0) + 1
     return max(counts, key=counts.get)
 
-def update_history(label_for_color):
-    # store the actual colored label so the strip reflects what you see
-    hist_buffer.append(label_for_color)
+# ----------------------------
+# UI theme
+# ----------------------------
+ctk.set_appearance_mode("dark")
+ctk.set_default_color_theme("blue")
+
+app = ctk.CTk()
+app.title("Tooth Section Visualizer 🦷")
+app.geometry("980x620")
+app.minsize(980, 620)
+
+app.grid_columnconfigure(0, weight=1)
+app.grid_columnconfigure(1, weight=0)
+app.grid_rowconfigure(0, weight=1)
+
+# ----------------------------
+# Left: Canvas card
+# ----------------------------
+left_card = ctk.CTkFrame(app, corner_radius=18)
+left_card.grid(row=0, column=0, padx=16, pady=16, sticky="nsew")
+left_card.grid_rowconfigure(1, weight=1)
+left_card.grid_columnconfigure(0, weight=1)
+
+title = ctk.CTkLabel(left_card, text="Live Mouth View", font=ctk.CTkFont(size=20, weight="bold"))
+title.grid(row=0, column=0, padx=16, pady=(16, 10), sticky="w")
+
+canvas = tk.Canvas(left_card, bg="#111111", highlightthickness=0)
+canvas.grid(row=1, column=0, padx=16, pady=(0, 16), sticky="nsew")
+
+# ----------------------------
+# Drawing IDs (so we can redraw cleanly)
+# ----------------------------
+region_left_id = None
+region_mid_id = None
+region_right_id = None
+history_box_ids = []
+label_ids = []
+bar_border_id = None
+current_color_label = None  # what we currently highlight (for redraw)
+
+# Colors
+OUTLINE = "#9CA3AF"
+DIM_FILL = "#2A2F3A"
+TEXT = "#D1D5DB"
+HIST_EMPTY = "#111827"
+
+def zone_color(label):
+    if label == "left front":
+        return "#22C55E"
+    if label == "middle front":
+        return "#38BDF8"
+    if label == "right front":
+        return "#F59E0B"
+    return DIM_FILL
+
+def draw_scene():
+    """
+    Draw everything relative to the current canvas size.
+    This runs on startup and whenever the window is resized.
+    """
+    global region_left_id, region_mid_id, region_right_id
+    global history_box_ids, label_ids, bar_border_id
+
+    canvas.delete("all")
+    history_box_ids = []
+    label_ids = []
+
+    w = max(canvas.winfo_width(), 1)
+    h = max(canvas.winfo_height(), 1)
+    cx, cy = w / 2, h / 2
+
+    # --- History strip (top, centered) ---
+    hist_len = 30
+    box_w = max(10, int(w * 0.016))       # scales with width
+    box_h = max(16, int(h * 0.045))       # scales with height
+    gap = max(3, int(box_w * 0.25))
+
+    total_w = hist_len * box_w + (hist_len - 1) * gap
+    hist_x0 = cx - total_w / 2
+    hist_y0 = h * 0.06
+    hist_y1 = hist_y0 + box_h
+
+    canvas.create_text(hist_x0 - 80, (hist_y0 + hist_y1) / 2,
+                       text="History", anchor="w",
+                       fill=TEXT, font=("Arial", 12, "bold"))
+
+    for i in range(hist_len):
+        x0 = hist_x0 + i * (box_w + gap)
+        x1 = x0 + box_w
+        rid = canvas.create_rectangle(x0, hist_y0, x1, hist_y1,
+                                      outline="#374151", fill=HIST_EMPTY)
+        history_box_ids.append(rid)
+
+    # --- Big 3-zone bar (centered) ---
+    bar_w = w * 0.65
+    bar_h = h * 0.22
+    bar_w = max(420, min(bar_w, w * 0.85))
+    bar_h = max(110, min(bar_h, h * 0.35))
+
+    bar_x0 = cx - bar_w / 2
+    bar_y0 = cy - bar_h / 2
+    bar_x1 = cx + bar_w / 2
+    bar_y1 = cy + bar_h / 2
+
+    bar_border_id = canvas.create_rectangle(bar_x0, bar_y0, bar_x1, bar_y1,
+                                            outline=OUTLINE, width=2)
+
+    third = bar_w / 3
+
+    # Determine fill based on current highlight
+    left_fill = zone_color(current_color_label) if current_color_label == "left front" else DIM_FILL
+    mid_fill  = zone_color(current_color_label) if current_color_label == "middle front" else DIM_FILL
+    right_fill= zone_color(current_color_label) if current_color_label == "right front" else DIM_FILL
+
+    region_left_id = canvas.create_rectangle(bar_x0, bar_y0, bar_x0 + third, bar_y1,
+                                             outline=OUTLINE, width=2, fill=left_fill)
+    region_mid_id  = canvas.create_rectangle(bar_x0 + third, bar_y0, bar_x0 + 2*third, bar_y1,
+                                             outline=OUTLINE, width=2, fill=mid_fill)
+    region_right_id= canvas.create_rectangle(bar_x0 + 2*third, bar_y0, bar_x1, bar_y1,
+                                             outline=OUTLINE, width=2, fill=right_fill)
+
+    # Labels under bar
+    label_y = bar_y1 + max(22, int(h * 0.06))
+    label_font = ("Arial", max(12, int(h * 0.03)), "bold")
+    label_ids.append(canvas.create_text(bar_x0 + third/2, label_y, text="LEFT", fill=TEXT, font=label_font))
+    label_ids.append(canvas.create_text(bar_x0 + third + third/2, label_y, text="MIDDLE", fill=TEXT, font=label_font))
+    label_ids.append(canvas.create_text(bar_x0 + 2*third + third/2, label_y, text="RIGHT", fill=TEXT, font=label_font))
+
+    # Repaint history with existing buffer
+    repaint_history()
+
+def repaint_history():
+    # Paint history boxes based on hist_buffer (right-aligned)
     padded = list(hist_buffer)
-    padded = ([""] * (HIST_LEN - len(padded))) + padded
+    padded = ([""] * (len(history_box_ids) - len(padded))) + padded
+
     for i, lab in enumerate(padded):
-        canvas.itemconfig(history_boxes[i], fill=label_to_color(lab if lab else ""))
+        fill = zone_color(lab) if lab else HIST_EMPTY
+        try:
+            canvas.itemconfig(history_box_ids[i], fill=fill)
+        except Exception:
+            pass
+
+def highlight(label):
+    global current_color_label
+    current_color_label = label
+
+    # Update fills without redrawing everything
+    if region_left_id is None:
+        return
+
+    canvas.itemconfig(region_left_id, fill=zone_color("left front") if label == "left front" else DIM_FILL)
+    canvas.itemconfig(region_mid_id,  fill=zone_color("middle front") if label == "middle front" else DIM_FILL)
+    canvas.itemconfig(region_right_id,fill=zone_color("right front") if label == "right front" else DIM_FILL)
+
+def update_history(label_for_color):
+    hist_buffer.append(label_for_color)
+    repaint_history()
+
+# Redraw on resize (debounced)
+_resize_job = None
+def on_canvas_resize(event):
+    global _resize_job
+    if _resize_job is not None:
+        app.after_cancel(_resize_job)
+    _resize_job = app.after(50, draw_scene)
+
+canvas.bind("<Configure>", on_canvas_resize)
+
+# ----------------------------
+# Right: Stats panel
+# ----------------------------
+right_panel = ctk.CTkFrame(app, corner_radius=18)
+right_panel.grid(row=0, column=1, padx=(0, 16), pady=16, sticky="ns")
+right_panel.grid_columnconfigure(0, weight=1)
+
+hdr = ctk.CTkLabel(right_panel, text="Live Stats", font=ctk.CTkFont(size=20, weight="bold"))
+hdr.grid(row=0, column=0, padx=16, pady=(16, 10), sticky="w")
+
+def make_stat_card(parent, title_text, value_text="--"):
+    card = ctk.CTkFrame(parent, corner_radius=14)
+    card.grid_columnconfigure(0, weight=1)
+    title = ctk.CTkLabel(card, text=title_text, font=ctk.CTkFont(size=12, weight="bold"), text_color="#9CA3AF")
+    title.grid(row=0, column=0, padx=12, pady=(10, 0), sticky="w")
+    value = ctk.CTkLabel(card, text=value_text, font=ctk.CTkFont(size=18, weight="bold"))
+    value.grid(row=1, column=0, padx=12, pady=(4, 10), sticky="w")
+    return card, value
+
+card_angles, lbl_angles = make_stat_card(right_panel, "Angles (deg)", "Roll: --  Pitch: --  Yaw: --")
+card_angles.grid(row=1, column=0, padx=16, pady=(0, 10), sticky="ew")
+
+card_pred, lbl_pred = make_stat_card(right_panel, "Predicted Section", "--")
+card_pred.grid(row=2, column=0, padx=16, pady=(0, 10), sticky="ew")
+
+card_conf, lbl_conf = make_stat_card(right_panel, "Confidence", "--")
+card_conf.grid(row=3, column=0, padx=16, pady=(0, 10), sticky="ew")
+
+card_status, lbl_status = make_stat_card(right_panel, "Status", "Click Calibrate")
+card_status.grid(row=4, column=0, padx=16, pady=(0, 10), sticky="ew")
+
+controls = ctk.CTkFrame(right_panel, corner_radius=14)
+controls.grid(row=5, column=0, padx=16, pady=(0, 16), sticky="ew")
+controls.grid_columnconfigure(0, weight=1)
+
+lbl_countdown = ctk.CTkLabel(controls, text="", font=ctk.CTkFont(size=14, weight="bold"))
+lbl_countdown.grid(row=0, column=0, padx=12, pady=(12, 6), sticky="w")
+
+btn_cal = ctk.CTkButton(controls, text="Calibrate (5s)", height=40, corner_radius=12)
+btn_cal.grid(row=1, column=0, padx=12, pady=(0, 12), sticky="ew")
 
 # ----------------------------
 # Calibration
@@ -199,23 +313,24 @@ def start_calibration():
 
     pred_buffer.clear()
     hist_buffer.clear()
-    highlight("left front")  # just clear later; harmless
+    highlight(None)
+    repaint_history()
 
-    lbl_pred.config(text="Predicted: --")
-    lbl_conf.config(text="Confidence: --")
+    lbl_pred.configure(text="--")
+    lbl_conf.configure(text="--")
 
     cal_rolls, cal_pitches, cal_yaws = [], [], []
 
-    btn_cal.config(state="disabled")
-    lbl_status.config(text="Status: Calibrating... hold still at your face")
+    btn_cal.configure(state="disabled")
+    lbl_status.configure(text="Hold at face, stay still")
     countdown_tick(CAL_SECONDS)
 
 def countdown_tick(sec_left):
     if sec_left <= 0:
         finalize_calibration()
         return
-    lbl_countdown.config(text=f"Calibrating {sec_left}...")
-    root.after(1000, lambda: countdown_tick(sec_left - 1))
+    lbl_countdown.configure(text=f"Calibrating {sec_left}...")
+    app.after(1000, lambda: countdown_tick(sec_left - 1))
 
 def finalize_calibration():
     global calibrated, calibrating_now, predicting_enabled
@@ -224,9 +339,9 @@ def finalize_calibration():
     calibrating_now = False
 
     if len(cal_rolls) < CAL_MIN_SAMPLES:
-        lbl_countdown.config(text="Calibration failed (no data)")
-        lbl_status.config(text="Status: ❌ Calibration failed. Try again.")
-        btn_cal.config(state="normal")
+        lbl_countdown.configure(text="Calibration failed")
+        lbl_status.configure(text="Try again")
+        btn_cal.configure(state="normal")
         predicting_enabled = False
         calibrated = False
         return
@@ -238,29 +353,28 @@ def finalize_calibration():
     calibrated = True
     predicting_enabled = True
 
-    lbl_countdown.config(text="Done ✅")
-    lbl_status.config(text="Status: ✅ Calibrated. Predicting live.")
-    btn_cal.config(state="normal")
+    lbl_countdown.configure(text="Done ✅")
+    lbl_status.configure(text="Calibrated — predicting")
+    btn_cal.configure(state="normal")
 
-btn_cal.config(command=start_calibration)
+btn_cal.configure(command=start_calibration)
 
 # ----------------------------
 # Main update loop
 # ----------------------------
 def update_loop():
     global cal_rolls, cal_pitches, cal_yaws
+    global cal_roll0, cal_pitch0, cal_yaw0
 
     out = readSerial()
     if out is not None:
         roll_raw, pitch_raw, yaw_raw = out
 
-        # Collect raw samples during calibration
         if calibrating_now:
             cal_rolls.append(roll_raw)
             cal_pitches.append(pitch_raw)
             cal_yaws.append(yaw_raw)
 
-        # Apply calibration offsets for display + prediction
         roll = roll_raw
         pitch = pitch_raw
         yaw = yaw_raw
@@ -270,7 +384,7 @@ def update_loop():
             pitch = pitch_raw - cal_pitch0
             yaw = wrap_yaw_rel(yaw_raw - cal_yaw0)
 
-        lbl_angles.config(text=f"Roll: {roll:.2f}   Pitch: {pitch:.2f}   Yaw: {yaw:.2f}")
+        lbl_angles.configure(text=f"Roll: {roll:.2f}  Pitch: {pitch:.2f}  Yaw: {yaw:.2f}")
 
         if predicting_enabled:
             input_df = pd.DataFrame([[roll, pitch]], columns=["Roll", "Pitch"])
@@ -280,7 +394,6 @@ def update_loop():
             text_label = "--"
 
             try:
-                # Default: use predict() output as label
                 pred_idx = int(classifier.predict(input_df)[0])
                 pred_label_for_color = class_label[pred_idx]
 
@@ -292,13 +405,11 @@ def update_loop():
                 else:
                     conf_text = "(no predict_proba)"
 
-                # Optional smoothing (vote window)
                 pred_buffer.append(pred_label_for_color)
                 voted = majority_vote(pred_buffer)
                 if voted is not None:
                     pred_label_for_color = voted
 
-                # If low confidence, show UNCERTAIN text BUT KEEP COLOR of pred_label_for_color
                 if has_proba and conf is not None and conf < CONF_THRESHOLD:
                     text_label = f"UNCERTAIN ({pred_label_for_color})"
                 else:
@@ -309,15 +420,17 @@ def update_loop():
                 conf_text = f"err: {e}"
                 pred_label_for_color = "--"
 
-            lbl_pred.config(text=f"Predicted: {text_label.upper() if text_label != '--' else '--'}")
-            lbl_conf.config(text=f"Confidence: {conf_text}")
+            lbl_pred.configure(text=text_label.upper())
+            lbl_conf.configure(text=conf_text)
 
             if pred_label_for_color in class_label:
                 highlight(pred_label_for_color)
                 update_history(pred_label_for_color)
 
-    root.after(UPDATE_MS, update_loop)
+    app.after(UPDATE_MS, update_loop)
 
-lbl_status.config(text="Status: Click Calibrate, hold at face for 5 seconds.")
+# Initial draw
+app.after(50, draw_scene)
+lbl_status.configure(text="Click Calibrate, hold at face for 5 seconds.")
 update_loop()
-root.mainloop()
+app.mainloop()
